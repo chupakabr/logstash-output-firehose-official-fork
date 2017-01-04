@@ -9,33 +9,31 @@ require "aws-sdk"
 
 describe LogStash::Outputs::Firehose do
 
-  describe "receive message with plain codec" do
+  before do
+    Thread.abort_on_exception = true
+  end
+
+  describe 'Receiving messages' do
     let(:data_str) { "123,someValue,1234567890" }
     let(:sample_event) { LogStash::Event.new("message" => data_str) }
-    let(:expected_event) { LogStash::Event.new("message" => data_str) }
-    let(:output) { LogStash::Outputs::Firehose.new({"codec" => "plain", "stream" => "my-test-stream"}) }
 
-    before do
-      Thread.abort_on_exception = true
-
-      # Setup Firehose client
-      output.stream = "aws-test-stream"
-      output.access_key_id = "Key ID"
-      output.secret_access_key = "Secret key"
-      output.register
-    end
-
-    subject {
-      expect(output).to receive(:handle_event) do |arg|
-        arg
-      end
-      output.receive(sample_event)
+    let(:config) {
+      {
+        'stream'            => 'aws-test-stream',
+        'access_key_id'     => 'Key ID',
+        'secret_access_key' => 'Secret key'
+      }
     }
 
-    it "returns same string" do
-      expect(subject).not_to eq(nil)
-      expect(subject.include? expected_event["message"]).to be_truthy
-      # expect(subject).to eq(expected_event["message"])
+    it 'puts firehose records' do
+      output = LogStash::Outputs::Firehose.new(config)
+
+      expect_any_instance_of(Aws::Firehose::Client).to receive(:put_record) do |instance, arg|
+        expect(arg.dig(:record, :data)).to include(data_str)
+      end
+
+      output.register
+      output.receive(sample_event)
     end
   end
 
