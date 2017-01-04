@@ -41,7 +41,10 @@ class LogStash::Outputs::Firehose < LogStash::Outputs::Base
   include LogStash::PluginMixins::AwsConfig::V2
 
   TEMPFILE_EXTENSION = "txt"
-  FIREHOSE_STREAM_VALID_CHARACTERS = /[\w\-]/
+
+  # Delivery Stream Name pattern:
+  # http://docs.aws.amazon.com/firehose/latest/APIReference/API_CreateDeliveryStream.html#Firehose-CreateDeliveryStream-request-DeliveryStreamName
+  FIREHOSE_STREAM_VALID_CHARACTERS = /^[a-zA-Z0-9_.-]+$/
 
   # make properties visible for tests
   attr_accessor :stream
@@ -56,7 +59,7 @@ class LogStash::Outputs::Firehose < LogStash::Outputs::Base
 
   # Firehose stream info
   config :region, :validate => :string, :default => "us-east-1"
-  config :stream, :validate => :string
+  config :stream, :validate => :string, :required => true
   config :access_key_id, :validate => :string
   config :secret_access_key, :validate => :string
 
@@ -71,17 +74,9 @@ class LogStash::Outputs::Firehose < LogStash::Outputs::Base
     #Aws.eager_autoload!(services: %w(Firehose))
 
     # Create Firehose API client
-    @firehose = aws_firehose_client
+    @logger.info "Registering Firehose output", :stream => @stream, :region => @region
 
-    # Validate stream name
-    if @stream.nil? || @stream.empty?
-      @logger.error("Firehose: stream name is empty", :stream => @stream)
-      raise LogStash::ConfigurationError, "Firehose: stream name is empty"
-    end
-    if @stream && @stream !~ FIREHOSE_STREAM_VALID_CHARACTERS
-      @logger.error("Firehose: stream name contains invalid characters", :stream => @stream, :allowed => FIREHOSE_STREAM_VALID_CHARACTERS)
-      raise LogStash::ConfigurationError, "Firehose: stream name contains invalid characters"
-    end
+    validate_stream_name
 
     # Register coder: comma separated line -> SPECIFIED_CODEC_FMT, call handler after to deliver encoded data to Firehose
     @codec.on_event do |event, encoded_event|
@@ -95,24 +90,24 @@ class LogStash::Outputs::Firehose < LogStash::Outputs::Base
   public
   def receive(event)
     @codec.encode(event)
-  end # def event
-
+  end
 
   #
   # Helper methods
   #
 
+  private
+  def validate_stream_name
+    if (@stream =~ FIREHOSE_STREAM_VALID_CHARACTERS).nil?
+      @logger.error("Firehose: stream name is invalid", :stream => @stream, :allowed => FIREHOSE_STREAM_VALID_CHARACTERS)
+      raise LogStash::ConfigurationError, "Firehose: stream name is invalid"
+    end
+  end
+
   # Build AWS Firehose client
   private
   def aws_firehose_client
-    @logger.info "Registering Firehose output", :stream => @stream, :region => @region
-    @firehose = Aws::Firehose::Client.new(aws_full_options)
-  end
-
-  # Build and return AWS client options map
-  private
-  def aws_full_options
-    aws_options_hash
+    @firehose ||= Aws::Firehose::Client.new(aws_options_hash)
   end
 
   # Evaluate AWS endpoint for Firehose based on specified @region option
@@ -137,7 +132,7 @@ class LogStash::Outputs::Firehose < LogStash::Outputs::Base
     @logger.debug "Pushing encoded event: #{encoded_event}"
 
     begin
-      @firehose.put_record({
+      aws_firehose_client.put_record({
         delivery_stream_name: @stream,
         record: {
             data: encoded_event
